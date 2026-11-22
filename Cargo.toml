@@ -1,0 +1,19 @@
+[package]
+name = "tracescalpel"
+version = "0.1.0"
+edition = "2024"
+description = "Headless Windows tracing for AI agents"
+license-file = "LICENSE"
+publish = false
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["arbitrary_precision", "raw_value"] }
+sha2 = "=0.10.9"
+windows-sys = { version = "=0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Performance",
+    "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
+] }

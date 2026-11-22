@@ -1,0 +1,13 @@
+{
+  "window": {"clock": "synthetic-qpc-A", "start": "9007199254741000", "deadline": "9007199254741010"},
+  "observed_end": {"clock": "synthetic-receipt", "tick": "8000", "order": 5},
+  "events": [
+    {"id": "before", "source_clock": "synthetic-qpc-A", "source_tick": "9007199254740999", "observed_clock": "synthetic-receipt", "observed_tick": "7000", "observed_order": 0, "expected": "outside_window"},
+    {"id": "at-start", "source_clock": "synthetic-qpc-A", "source_tick": "9007199254741000", "observed_clock": "synthetic-receipt", "observed_tick": "7010", "observed_order": 1, "expected": "in_window"},
+    {"id": "before-deadline-late", "source_clock": "synthetic-qpc-A", "source_tick": "9007199254741009", "observed_clock": "synthetic-receipt", "observed_tick": "8100", "observed_order": 6, "expected": "in_window"},
+    {"id": "at-deadline", "source_clock": "synthetic-qpc-A", "source_tick": "9007199254741010", "observed_clock": "synthetic-receipt", "observed_tick": "7020", "observed_order": 2, "expected": "outside_window"},
+    {"id": "after-deadline-before-marker", "source_clock": "synthetic-qpc-A", "source_tick": "9007199254741011", "observed_clock": "synthetic-receipt", "observed_tick": "7030", "observed_order": 3, "expected": "outside_window"},
+    {"id": "unknown", "source_clock": null, "source_tick": "9007199254741005", "observed_clock": "synthetic-receipt", "observed_tick": "7040", "observed_order": 4, "expected": "unknown_clock"},
+    {"id": "different-clock", "source_clock": "synthetic-qpc-B", "source_tick": "9007199254741005", "observed_clock": "synthetic-receipt", "observed_tick": "8200", "observed_order": 7, "expected": "unknown_clock"}
+  ]
+}

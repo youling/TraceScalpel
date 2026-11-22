@@ -1,0 +1,28 @@
+name: Windows CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run tests
+        run: cargo test --locked
+      - name: Verify stop and drain lifecycle
+        run: cargo test --locked --manifest-path validation/lifecycle/Cargo.toml
+      - name: Verify synthetic clock-window classifications
+        run: python validation/verify_window.py validation/fixed_window.json
