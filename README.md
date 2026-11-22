@@ -47,6 +47,7 @@ Run the Windows subprocess integration tests with `cargo test --locked`.
 - [Architecture and evidence flow](docs/ARCHITECTURE.md)
 - [Tracing tool and licensing research](docs/RESEARCH.md)
 - [Windows capture, clocks and agent protocol research](docs/WINDOWS-FRONTIER.md)
+- [Burst handling and local storage research](docs/BURST-STORAGE.md)
 - [Validation plan and synthetic checks](docs/VALIDATION.md)
 - [Milestones](https://github.com/youling/TraceScalpel/milestones)
 
