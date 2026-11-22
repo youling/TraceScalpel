@@ -27,7 +27,9 @@ CPU 先做 PID、事件编号等小字段的低延迟筛选。对于本地离线
 | 原生 ETL | WPR/ETW 复用原生录制与环形缓冲，WPA/PerfView 供复核。可先留有界原件，后置解码与查询。 [WPR 模式](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/logging-mode) · [TraceEvent](https://github.com/microsoft/perfview/blob/main/documentation/TraceEvent/TraceEventProgrammersGuide.md) | profile 的有效范围、时钟、保存成本、原生丢失计数和可恢复性。 |
 | DuckDB + Parquet 或 Perfetto | 对封存后的列式数据做查询与可移植交换。Perfetto 保持时间关联分析地位。 [Parquet 结构](https://parquet.apache.org/docs/file-format/) · [DuckDB 2.0.1](https://github.com/duckdb/duckdb/releases/tag/v2.0.1) · [Perfetto 缓冲语义](https://perfetto.dev/docs/concepts/buffers) | 压缩、读写额外空间、全窗查询、行组裁剪及损失语义保真。 |
 
-归一化数据保留录制 ID、来源、序号、原始整数 QPC、时钟域及原件定位。热库只建试验实际需要的索引，先验证目标进程加时间窗。滚动保留比较按段删除与逐行删除的成本。原始 ETL、归一化库和分析导出分别核算数据量与保留期限。SQLite 和 DuckDB 暂用于实验，各组件及依赖仍按各自上游许可发布。
+归一化数据保留录制 ID、来源、序号、原始整数 QPC、时钟域及原件定位。热库只建试验实际需要的索引，先验证目标进程加时间窗。滚动保留比较按段删除与逐行删除的成本。原始 ETL、归一化库和分析导出分别核算数据量与保留期限。
+
+SQLite 和 DuckDB 暂用于实验。DuckDB 核心采用 MIT，redb 可选 MIT 或 Apache-2.0，RocksDB 可选 Apache-2.0 路线并保留上游通知。ESENT 通过 Windows 系统 API 调用。引入生产发行包前，再按实际版本核对绑定、传递依赖和分发义务。 [DuckDB 许可](https://github.com/duckdb/duckdb/blob/v2.0.1/LICENSE) · [redb 许可](https://github.com/cberner/redb#license) · [RocksDB 许可](https://github.com/meta/rocksdb#license)
 
 ## 实测第一轮
 
