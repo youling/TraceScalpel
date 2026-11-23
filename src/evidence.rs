@@ -1,5 +1,6 @@
 use crate::etw;
 use crate::fixture;
+use crate::startup::evidence_directory;
 use crate::storage::{Backend, Row, Window};
 use crate::timebase::{self, Clock};
 use serde::{Deserialize, Serialize};
@@ -113,24 +114,6 @@ fn input_error(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
-fn evidence_root() -> io::Result<PathBuf> {
-    let root = std::env::var_os("TRACESCALPEL_EVIDENCE_DIR")
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "set TRACESCALPEL_EVIDENCE_DIR to a private scratch directory",
-            )
-        })?;
-    if !fs::metadata(&root)?.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotADirectory,
-            "evidence root must name an existing directory",
-        ));
-    }
-    Ok(root)
-}
-
 fn capture_path(capture_id: &str) -> io::Result<PathBuf> {
     if capture_id.len() > 96
         || !(capture_id.starts_with("fixture-") || capture_id.starts_with("etw-"))
@@ -140,7 +123,7 @@ fn capture_path(capture_id: &str) -> io::Result<PathBuf> {
     {
         return Err(input_error("invalid capture ID"));
     }
-    Ok(evidence_root()?.join(capture_id))
+    Ok(evidence_directory()?.join(capture_id))
 }
 
 fn plain_file(path: &Path, max_bytes: u64) -> io::Result<File> {
@@ -279,7 +262,7 @@ fn prepare_capture(root: &Path, source: Source) -> io::Result<(String, PathBuf, 
 }
 
 pub fn record(request: RecordRequest) -> io::Result<Value> {
-    let (capture_id, dir, collected) = prepare_capture(&evidence_root()?, request.source)?;
+    let (capture_id, dir, collected) = prepare_capture(&evidence_directory()?, request.source)?;
     let index_file = request.backend.filename();
     let raw = digest_artifact(&dir, request.source.filename())?;
     {

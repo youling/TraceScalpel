@@ -62,3 +62,15 @@ python -m venv .venv
 | **存储与写入** | 比较有界 ETL 后置索引、SQLite 直接入库、带校验与稀疏索引的二进制段。相同刷盘频率、查询和保留窗口下对照单写者同步 I/O、overlapped/IOCP。只有在目标系统支持且写提交成为瓶颈时再比 I/O Ring。测试进程中止与隔离环境的恢复、句柄回收和空间封存。 [I/O Ring 能力查询](https://learn.microsoft.com/en-us/windows/win32/api/ioringapi/nf-ioringapi-queryioringcapabilities) |
 
 还可验证低成本摘要环和短窗细节采集的组合。用同一 QPC 时钟衡量历史保留长度、触发延迟与细节空窗。滚动及触发设计参考 Stuttometer，GPL 源码保持独立。 [Stuttometer](https://github.com/xdr0p/stuttometer)
+
+## Windows 输出卷与对齐
+
+按调用方选择的目录定位实际卷。文件系统的**文件簇**是空间分配粒度，磁盘的**逻辑和物理扇区**定义设备对齐条件，数据库的**页**和 WAL 是存储引擎布局。卷属性用于前置诊断和测试分组。缓存写入使用独立的合批与刷盘策略。无缓存写入作为追加段的可选对照，单独约束偏移、长度和内存缓冲对齐。数据库页大小和写入批次均通过各自实验决定。 [GetDiskFreeSpaceW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getdiskfreespacew) · [FILE_STORAGE_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_storage_info) · [文件缓冲及对齐](https://learn.microsoft.com/en-us/windows/win32/fileio/file-buffering) · [SQLite 页大小](https://sqlite.org/pragma.html#pragma_page_size)
+
+- **NTFS** 作为兼容性基准。默认分配单元先测 SQLite、redb 与追加段。 [Windows 格式化选项](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/format)
+- **ReFS** 先实测 4 KiB。微软还将 64 KiB 列为大型顺序 I/O 的候选配置，可加入追加段对照。 [ReFS 概览](https://learn.microsoft.com/en-us/windows-server/storage/refs/refs-overview)
+- **exFAT** 按可移介质导出场景评估。SQLite WAL 活跃库使用本机文件系统。 [文件系统能力对照](https://learn.microsoft.com/en-us/windows/win32/fileio/filesystem-functionality-comparison) · [SQLite WAL](https://sqlite.org/wal.html)
+
+本机只读盘点显示两个 NVMe 分别使用 4 KiB NTFS 和 4 KiB ReFS，均为 512 B 逻辑扇区与 4 KiB 物理扇区。两卷位于不同设备。短写测试仅在 ReFS 上用临时文件做了两轮相反顺序的缓存写入对照，每次顺序写 32 MiB，每 1 MiB 执行 `Flush(true)`。4 KiB、64 KiB、256 KiB、1 MiB 提交给 FileStream 的 I/O 写调用次数分别为 8192、512、128、32。吞吐范围分别为 307–423、382–497、363–372、385–560 MiB/s，短样本波动明显。该实验给出合批候选，文件系统与分配单元排名仍需同设备条件下实测。
+
+后续在同型号且控制设备差异的试验卷上比较 NTFS/ReFS 与分配单元，持久化语义、真实事件分布、文件保留、可用空间和装满程度均保持一致。同步盘、杀进程恢复与电源故障恢复分开测量；先从缓存写入、有限预分配、每次刷盘字节数和最长等待时间开始。

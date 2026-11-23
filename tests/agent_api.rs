@@ -209,6 +209,20 @@ impl EvidenceClient {
 fn native_etl_evidence_reopens_and_pages_across_all_backends() {
     let scratch = Scratch::new();
     let mut recorder = EvidenceClient::start(&scratch);
+    let storage = recorder.ok("camera.inspect_storage", json!({}));
+    assert!(storage["token_elevated"].is_boolean());
+    let volume = &storage["volume"];
+    assert_eq!(volume["drive_type"], "fixed");
+    assert!(
+        volume["filesystem"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty())
+    );
+    assert!(
+        volume["allocation_unit_bytes"]
+            .as_u64()
+            .is_some_and(|size| size > 0)
+    );
     let sealed: Vec<Value> = ["sqlite", "segments", "redb"]
         .into_iter()
         .map(|backend| {
