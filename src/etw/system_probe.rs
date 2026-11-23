@@ -1,4 +1,4 @@
-//! Explicitly enabled, elevated CI control for two Windows kernel manifest providers.
+//! Explicitly enabled, elevated CI control for Windows system process and file events.
 //! The bounded ETL is transient. Reports expose only fixture matches and aggregate counters.
 
 use std::ffi::OsString;
@@ -16,8 +16,9 @@ use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows_sys::Win32::System::Diagnostics::Etw::{
     ENABLE_TRACE_PARAMETERS, ENABLE_TRACE_PARAMETERS_VERSION_2,
     EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0, EVENT_FILTER_DESCRIPTOR, EVENT_FILTER_TYPE_EVENT_ID,
-    EVENT_TRACE_NO_PER_PROCESSOR_BUFFERING, PROPERTY_DATA_DESCRIPTOR, TdhGetProperty,
-    TdhGetPropertySize,
+    EVENT_TRACE_FLAG_DISK_FILE_IO, EVENT_TRACE_FLAG_DISK_IO, EVENT_TRACE_FLAG_FILE_IO_INIT,
+    EVENT_TRACE_FLAG_NO_SYSCONFIG, EVENT_TRACE_SYSTEM_LOGGER_MODE, PROPERTY_DATA_DESCRIPTOR,
+    TdhGetProperty, TdhGetPropertySize,
 };
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
@@ -26,13 +27,15 @@ use windows_sys::core::{PCWSTR, w};
 const ETL_MIB: u32 = 4;
 const CAPTURE_DEADLINE: Duration = Duration::from_secs(4);
 const PROCESS_PROVIDER: GUID = GUID::from_u128(0x22fb2cd6_0e7b_422b_a0c7_2fad1fd0e716);
-const FILE_PROVIDER: GUID = GUID::from_u128(0xedd08927_9cc4_4e65_b970_c2560fb5c289);
-// Event IDs, keywords, and property names from the installed provider manifests, not offsets.
+const FILE_PROVIDER: GUID = GUID::from_u128(0x90cbdc39_4a3e_11d1_84f4_0000f80464e3);
+// Process uses the manifest event ID. Classic FileIo uses the MOF event opcode.
 const PROCESS_START: u16 = 1;
-const FILE_CREATE: u16 = 12;
-const FILE_CREATE_NEW: u16 = 30;
+const FILE_CREATE_OPCODE: u8 = 64;
 const PROCESS_KEYWORD: u64 = 0x10;
-const FILE_CREATE_KEYWORDS: u64 = 0x20 | 0x80 | 0x1000;
+const FILE_FLAGS: u32 = EVENT_TRACE_FLAG_DISK_IO
+    | EVENT_TRACE_FLAG_DISK_FILE_IO
+    | EVENT_TRACE_FLAG_FILE_IO_INIT
+    | EVENT_TRACE_FLAG_NO_SYSCONFIG;
 
 struct Scratch {
     dir: PathBuf,
@@ -58,9 +61,9 @@ struct SystemSession {
 
 fn properties(guid: GUID) -> TraceProperties {
     let mut p = TraceProperties::new(guid);
-    // Regular ETW for the manifest providers, not an NT Kernel Logger session.
-    p.properties.LogFileMode =
-        EVENT_TRACE_FILE_MODE_SEQUENTIAL | EVENT_TRACE_NO_PER_PROCESSOR_BUFFERING;
+    // A uniquely named system logger with the file-create initiation stream.
+    p.properties.LogFileMode = EVENT_TRACE_FILE_MODE_SEQUENTIAL | EVENT_TRACE_SYSTEM_LOGGER_MODE;
+    p.properties.EnableFlags = FILE_FLAGS;
     p.properties.MaximumFileSize = ETL_MIB;
     p
 }
@@ -293,6 +296,15 @@ fn property_u32(event: &EVENT_RECORD, name: PCWSTR) -> Option<u32> {
     (property(event, name, &mut buffer).ok()? == buffer.len()).then(|| u32::from_le_bytes(buffer))
 }
 
+fn classic_thread_id(event: &EVENT_RECORD) -> Option<u32> {
+    let mut buffer = [0; 8];
+    match property(event, w!("TTID"), &mut buffer).ok()? {
+        4 => Some(u32::from_le_bytes(buffer[..4].try_into().ok()?)),
+        8 => u32::try_from(u64::from_le_bytes(buffer)).ok(),
+        _ => None,
+    }
+}
+
 fn matches_filename(raw: &[u8], expected: &[u16]) -> bool {
     let (units, remainder) = raw.as_chunks::<2>();
     if !remainder.is_empty() {
@@ -319,15 +331,14 @@ fn matches_filename(raw: &[u8], expected: &[u16]) -> bool {
 struct Hits {
     in_window: u32,
     out_of_window: u32,
-    first: Option<(i64, u16, u8)>,
+    first: Option<(i64, EVENT_DESCRIPTOR)>,
 }
 
 impl Hits {
     fn observe(&mut self, descriptor: EVENT_DESCRIPTOR, tick: i64, span: Span) {
         if span.contains(tick) {
             self.in_window = self.in_window.saturating_add(1);
-            self.first
-                .get_or_insert((tick, descriptor.Id, descriptor.Version));
+            self.first.get_or_insert((tick, descriptor));
         } else {
             self.out_of_window = self.out_of_window.saturating_add(1);
         }
@@ -339,10 +350,11 @@ impl Hits {
             "within_fixture_qpc_bracket": self.in_window,
             "matching_identity_outside_bracket": self.out_of_window,
             "fixture_bracket": span.report(),
-            "first_event": self.first.map(|(tick, id, version)| json!({
+            "first_event": self.first.map(|(tick, descriptor)| json!({
                 "qpc": tick.to_string(),
-                "id": id,
-                "version": version
+                "id": descriptor.Id,
+                "opcode": descriptor.Opcode,
+                "version": descriptor.Version
             }))
         })
     }
@@ -387,18 +399,16 @@ impl ReplayState {
             }
             self.process_decode_failures = self.process_decode_failures.saturating_add(1);
         } else if equal_guid(&header.ProviderId, &FILE_PROVIDER) {
-            if !matches!(descriptor.Id, FILE_CREATE | FILE_CREATE_NEW) {
+            if descriptor.Opcode != FILE_CREATE_OPCODE {
                 self.other_provider_events = self.other_provider_events.saturating_add(1);
                 return None;
             }
             self.file_candidates = self.file_candidates.saturating_add(1);
-            if header.ProcessId != self.pid
-                && property_u32(event, w!("IssuingThreadId")) != Some(self.tid)
-            {
+            if header.ProcessId != self.pid && classic_thread_id(event) != Some(self.tid) {
                 return None;
             }
             let mut filename = [0; 4096];
-            if let Ok(size) = property(event, w!("FileName"), &mut filename) {
+            if let Ok(size) = property(event, w!("OpenPath"), &mut filename) {
                 return self
                     .expected
                     .filenames
@@ -517,15 +527,6 @@ fn capture() -> Result<Value, ProbeError> {
                 "enable_kernel_process",
                 enable(handle, &PROCESS_PROVIDER, &[PROCESS_START], PROCESS_KEYWORD),
             )?;
-            stage(
-                "enable_kernel_file",
-                enable(
-                    handle,
-                    &FILE_PROVIDER,
-                    &[FILE_CREATE, FILE_CREATE_NEW],
-                    FILE_CREATE_KEYWORDS,
-                ),
-            )?;
             stage("emit_owned_controls", produce(&cmd, &scratch, deadline))
         })();
         let _ = finish.send(());
@@ -578,7 +579,7 @@ fn capture() -> Result<Value, ProbeError> {
     Ok(json!({
         "status": if succeeded { "owned_controls_observed" } else { "incomplete" },
         "token_elevated": true,
-        "capture_mode": "standard_scoped_provider_etl",
+        "capture_mode": "named_system_logger_etl",
         "clock": {
             "kind": "raw_qpc", "frequency_hz": qpc_frequency.to_string(),
             "etl_frequency_hz": frequency_from_etl.to_string(),
@@ -597,7 +598,8 @@ fn capture() -> Result<Value, ProbeError> {
             "etl_events": etl_event_loss, "etl_buffers": etl_buffer_loss
         },
         "scope": {
-            "enable_filters": "provider_keyword_and_event_id",
+            "process_enable_filters": "provider_keyword_and_event_id",
+            "file_enable_filters": "system_file_io_init_flags",
             "identity": "owned_process_and_exact_fixture_file_postfilter",
             "other_events_from_enabled_providers": state.other_provider_events
         },
@@ -611,9 +613,9 @@ fn capture() -> Result<Value, ProbeError> {
             "negative_control": noise_process.report(noise_proc_span)
         },
         "file": {
-            "provider": "Microsoft-Windows-Kernel-File",
+            "provider": "SystemTraceProvider/FileIo",
             "guid": guid_string(&FILE_PROVIDER),
-            "event_ids": [FILE_CREATE, FILE_CREATE_NEW], "keyword": FILE_CREATE_KEYWORDS,
+            "opcode": FILE_CREATE_OPCODE, "kernel_enable_flags": FILE_FLAGS,
             "candidates": state.file_candidates,
             "decode_failures": state.file_decode_failures,
             "target": positive_file.report(target_file_span),
