@@ -15,9 +15,9 @@ use serde_json::{Value, json};
 use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
 use windows_sys::Win32::System::Diagnostics::Etw::{
     ENABLE_TRACE_PARAMETERS, ENABLE_TRACE_PARAMETERS_VERSION_2,
-    EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0, EVENT_FILTER_DESCRIPTOR, EVENT_FILTER_EVENT_ID,
-    EVENT_FILTER_TYPE_EVENT_ID, EVENT_TRACE_NO_PER_PROCESSOR_BUFFERING, PROPERTY_DATA_DESCRIPTOR,
-    TdhGetProperty, TdhGetPropertySize,
+    EVENT_ENABLE_PROPERTY_IGNORE_KEYWORD_0, EVENT_FILTER_DESCRIPTOR, EVENT_FILTER_TYPE_EVENT_ID,
+    EVENT_TRACE_NO_PER_PROCESSOR_BUFFERING, PROPERTY_DATA_DESCRIPTOR, TdhGetProperty,
+    TdhGetPropertySize,
 };
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
@@ -30,8 +30,9 @@ const FILE_PROVIDER: GUID = GUID::from_u128(0xedd08927_9cc4_4e65_b970_c2560fb5c2
 // Event IDs, keywords, and property names from the installed provider manifests, not offsets.
 const PROCESS_START: u16 = 1;
 const FILE_CREATE: u16 = 12;
+const FILE_CREATE_NEW: u16 = 30;
 const PROCESS_KEYWORD: u64 = 0x10;
-const FILE_CREATE_KEYWORD: u64 = 0x80;
+const FILE_CREATE_KEYWORDS: u64 = 0x20 | 0x80 | 0x1000;
 
 struct Scratch {
     dir: PathBuf,
@@ -107,21 +108,27 @@ impl Drop for SystemSession {
 fn enable(
     handle: CONTROLTRACE_HANDLE,
     provider: &GUID,
-    event: u16,
+    events: &[u16],
     keyword: u64,
 ) -> io::Result<()> {
-    // EVENT_FILTER_DESCRIPTOR requires the pointed-to data to be aligned to eight bytes.
-    #[repr(align(8))]
-    struct AlignedEventFilter(EVENT_FILTER_EVENT_ID);
-    let id_filter = AlignedEventFilter(EVENT_FILTER_EVENT_ID {
-        FilterIn: true,
-        Reserved: 0,
-        Count: 1,
-        Events: [event],
-    });
+    // EVENT_FILTER_EVENT_ID has a trailing array and the descriptor requires eight-byte alignment.
+    #[repr(C, align(8))]
+    struct EventIdFilter {
+        filter_in: u8,
+        reserved: u8,
+        count: u16,
+        events: [u16; 2],
+    }
+    let mut id_filter = EventIdFilter {
+        filter_in: 1,
+        reserved: 0,
+        count: events.len() as u16,
+        events: [0; 2],
+    };
+    id_filter.events[..events.len()].copy_from_slice(events);
     let mut filter = EVENT_FILTER_DESCRIPTOR {
-        Ptr: (&raw const id_filter.0) as u64,
-        Size: size_of::<EVENT_FILTER_EVENT_ID>() as u32,
+        Ptr: (&raw const id_filter) as u64,
+        Size: (offset_of!(EventIdFilter, events) + size_of_val(events)) as u32,
         Type: EVENT_FILTER_TYPE_EVENT_ID,
     };
     let parameters = ENABLE_TRACE_PARAMETERS {
@@ -380,7 +387,7 @@ impl ReplayState {
             }
             self.process_decode_failures = self.process_decode_failures.saturating_add(1);
         } else if equal_guid(&header.ProviderId, &FILE_PROVIDER) {
-            if descriptor.Id != FILE_CREATE {
+            if !matches!(descriptor.Id, FILE_CREATE | FILE_CREATE_NEW) {
                 self.other_provider_events = self.other_provider_events.saturating_add(1);
                 return None;
             }
@@ -508,11 +515,16 @@ fn capture() -> Result<Value, ProbeError> {
         let observed = (|| {
             stage(
                 "enable_kernel_process",
-                enable(handle, &PROCESS_PROVIDER, PROCESS_START, PROCESS_KEYWORD),
+                enable(handle, &PROCESS_PROVIDER, &[PROCESS_START], PROCESS_KEYWORD),
             )?;
             stage(
                 "enable_kernel_file",
-                enable(handle, &FILE_PROVIDER, FILE_CREATE, FILE_CREATE_KEYWORD),
+                enable(
+                    handle,
+                    &FILE_PROVIDER,
+                    &[FILE_CREATE, FILE_CREATE_NEW],
+                    FILE_CREATE_KEYWORDS,
+                ),
             )?;
             stage("emit_owned_controls", produce(&cmd, &scratch, deadline))
         })();
@@ -601,7 +613,7 @@ fn capture() -> Result<Value, ProbeError> {
         "file": {
             "provider": "Microsoft-Windows-Kernel-File",
             "guid": guid_string(&FILE_PROVIDER),
-            "event_id": FILE_CREATE, "keyword": FILE_CREATE_KEYWORD,
+            "event_ids": [FILE_CREATE, FILE_CREATE_NEW], "keyword": FILE_CREATE_KEYWORDS,
             "candidates": state.file_candidates,
             "decode_failures": state.file_decode_failures,
             "target": positive_file.report(target_file_span),
