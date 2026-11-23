@@ -24,6 +24,8 @@ use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::core::{PCWSTR, w};
 
+mod realtime;
+
 const ETL_MIB: u32 = 4;
 const CAPTURE_DEADLINE: Duration = Duration::from_secs(4);
 const PROCESS_PROVIDER: GUID = GUID::from_u128(0x22fb2cd6_0e7b_422b_a0c7_2fad1fd0e716);
