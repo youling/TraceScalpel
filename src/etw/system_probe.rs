@@ -346,11 +346,11 @@ impl Hits {
         }
     }
 
-    fn report(&self, span: Span) -> Value {
+    fn report(&self, span: Span, expected_at_least: u32, outside_checked: bool) -> Value {
         json!({
-            "expected_at_least": 1,
+            "expected_at_least": expected_at_least,
             "within_fixture_qpc_bracket": self.in_window,
-            "matching_identity_outside_bracket": self.out_of_window,
+            "matching_identity_outside_bracket": outside_checked.then_some(self.out_of_window),
             "fixture_bracket": span.report(),
             "first_event": self.first.map(|(tick, descriptor)| json!({
                 "qpc": tick.to_string(),
@@ -611,8 +611,8 @@ fn capture() -> Result<Value, ProbeError> {
             "event_id": PROCESS_START, "keyword": PROCESS_KEYWORD,
             "candidates": state.process_candidates,
             "decode_failures": state.process_decode_failures,
-            "target": positive_process.report(target_proc_span),
-            "negative_control": noise_process.report(noise_proc_span)
+            "target": positive_process.report(target_proc_span, 1, true),
+            "negative_control": noise_process.report(noise_proc_span, 1, true)
         },
         "file": {
             "provider": "SystemTraceProvider/FileIo",
@@ -620,8 +620,8 @@ fn capture() -> Result<Value, ProbeError> {
             "opcode": FILE_CREATE_OPCODE, "kernel_enable_flags": FILE_FLAGS,
             "candidates": state.file_candidates,
             "decode_failures": state.file_decode_failures,
-            "target": positive_file.report(target_file_span),
-            "negative_control": noise_file.report(noise_file_span)
+            "target": positive_file.report(target_file_span, 1, true),
+            "negative_control": noise_file.report(noise_file_span, 1, true)
         }
     }))
 }

@@ -10,6 +10,10 @@ use windows_sys::Win32::System::Diagnostics::Etw::{
 
 const LIVE_DEADLINE: Duration = Duration::from_secs(8);
 const PHASE_DEADLINE: Duration = Duration::from_secs(3);
+const MEASURE_SECONDS: u32 = 2;
+const BURSTS: u32 = 5;
+const OPENS_PER_BURST: u32 = 64;
+const BURST_SPACING: Duration = Duration::from_millis(350);
 
 fn live_properties(guid: GUID) -> TraceProperties {
     let mut props = properties(guid);
@@ -53,18 +57,22 @@ struct Phase {
     filename: Vec<u16>,
     spans: [Span; 2],
     hits: [Hits; 2],
+    expected: [u32; 2],
     survey: Option<Survey>,
 }
 
 impl Phase {
     fn ready(&self) -> bool {
-        self.hits.iter().all(|hits| hits.in_window > 0)
+        self.hits
+            .iter()
+            .zip(self.expected)
+            .all(|(hits, expected)| hits.in_window >= expected)
     }
 
     fn report(&self) -> Value {
         json!({
-            "process_start": self.hits[0].report(self.spans[0]),
-            "file_create": self.hits[1].report(self.spans[1])
+            "process_start": self.hits[0].report(self.spans[0], self.expected[0], false),
+            "file_create_or_open": self.hits[1].report(self.spans[1], self.expected[1], false)
         })
     }
 }
@@ -142,7 +150,9 @@ impl Consumer {
                 survey.set_fields(kind, fields);
             }
         }
-        let _ = self.notices.try_send(());
+        if phase.hits[index].in_window == phase.expected[index] {
+            let _ = self.notices.try_send(());
+        }
     }
 }
 
@@ -170,31 +180,58 @@ fn emit_phase(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing fixture basename"))?
         .encode_wide()
         .collect();
+    let started = Instant::now();
     let mut child = {
         // This is a test-only registration lock, released before waiting for any delivery.
         // The callback cannot attribute a child to a phase until its exact PID and bracket exist.
         let mut slot = locked(state)?;
         let (child, process_span) = bracket(|| start_child(cmd))?;
-        let (_, file_span) = bracket(|| new_file(path))?;
+        let (_, mut file_span) = bracket(|| new_file(path))?;
         let survey = measured_frequency
             .map(|freq| {
-                let end = file_span
-                    .after
-                    .checked_add(1)
+                let end = freq
+                    .checked_mul(i64::from(MEASURE_SECONDS))
+                    .and_then(|duration| process_span.before.checked_add(duration))
                     .ok_or_else(|| io::Error::other("QPC window overflow"))?;
+                file_span.after = end - 1;
                 Survey::new(process_span.before, end, freq)
             })
             .transpose()?;
+        let file_operations = 1 + measured_frequency.map_or(0, |_| BURSTS * OPENS_PER_BURST);
         *slot = Some(Phase {
             child_pid: child.0.id(),
             filename,
             spans: [process_span, file_span],
             hits: std::array::from_fn(|_| Hits::default()),
+            expected: [1, file_operations],
             survey,
         });
         child
     };
-    wait_child(&mut child, deadline)
+    wait_child(&mut child, deadline)?;
+    if measured_frequency.is_some() {
+        run_file_bursts(path, started, deadline)?;
+    }
+    Ok(())
+}
+
+fn run_file_bursts(path: &Path, start: Instant, phase_deadline: Instant) -> io::Result<()> {
+    let deadline = (start + Duration::from_secs(u64::from(MEASURE_SECONDS))).min(phase_deadline);
+    for burst in 0..BURSTS {
+        let due = start + BURST_SPACING * burst;
+        thread::sleep(due.min(deadline).saturating_duration_since(Instant::now()));
+        for _ in 0..OPENS_PER_BURST {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "fixture file opens exceeded the observation window",
+                ));
+            }
+            drop(File::open(path)?);
+        }
+    }
+    thread::sleep(deadline.saturating_duration_since(Instant::now()));
+    Ok(())
 }
 
 fn wait_delivery(
@@ -434,6 +471,8 @@ fn run() -> Result<Value, ProbeError> {
         "session_bracket": Span { before: qpc_before, after: stop.qpc_after }.report(),
         "readiness": readiness,
         "measurements": phase.report(),
+        "fixture_workload": {"window_seconds": MEASURE_SECONDS, "file_bursts": BURSTS, "opens_per_burst": OPENS_PER_BURST},
+        "outside_window_scope": "aggregator_input_after_qpc_and_identity_filter",
         "survey": survey,
         "stop": if stop.timed_out { "watchdog_stop_succeeded" } else { "requested_stop_succeeded" },
         "drain": "process_trace_returned_success",
@@ -485,6 +524,15 @@ fn owned_realtime_stats_control() {
                 .as_array()
                 .expect("event types");
             assert_eq!(types.len(), 2);
+            assert_eq!(
+                report["survey"]["total"]["events"],
+                2 + BURSTS * OPENS_PER_BURST
+            );
+            assert!(
+                report["survey"]["nonempty_buckets"]
+                    .as_u64()
+                    .is_some_and(|count| count >= u64::from(BURSTS))
+            );
             for event in types {
                 assert!(
                     event["fields"]

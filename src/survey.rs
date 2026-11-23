@@ -142,6 +142,7 @@ impl Survey {
             "qpc_frequency_hz": self.qpc_frequency.to_string(),
             "bucket_width_ticks": self.bucket_ticks.to_string(),
             "buckets": self.bins.len(),
+            "nonempty_buckets": self.bins.iter().filter(|bin| bin.events > 0).count(),
             "peak_events_per_bucket": self.bins.iter().map(|bin| bin.events).max(),
             "peak_user_data_bytes_per_bucket": self.bins.iter().map(|bin| bin.user_data_bytes).max(),
             "total": self.total,
