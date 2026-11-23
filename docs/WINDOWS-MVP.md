@@ -20,6 +20,12 @@ flowchart LR
 
 为可信的本机 Agent 创建一个可写的专用目录。该目录由运行方控制和清理。stdin/stdout 使用逐行 JSON-RPC，既有 `camera.run_fixture` 继续返回即时自报告。
 
+### 采集入口预检
+
+`tracescalpel-capture.exe` 嵌入 Windows `requireAdministrator` 清单。从 Windows Shell 启动时，由系统在进程创建前请求授权；以 Agent 的 stdio 方式调用时，先启动管理员终端或已获授权的宿主，再启动该入口。普通令牌直接使用 CreateProcess 时，Windows 可返回 740。采集入口先检查进程令牌与配置目录，再打开 stdio 服务。系统 provider 的启用和正控 READY 仍在 [#3](https://github.com/youling/TraceScalpel/issues/3) 的实时采集验收内。常规 `tracescalpel.exe` 使用调用者权限提供自有负载及封存查询。 [MSVC UAC 清单](https://learn.microsoft.com/en-us/cpp/build/reference/manifestuac-embeds-uac-information-in-manifest?view=msvc-170)
+
+`camera.inspect_storage` 可在两种入口中只读检查 `TRACESCALPEL_EVIDENCE_DIR` 实际所在卷，返回令牌提升状态、文件系统、可用空间、分配单元及逻辑和物理扇区信息。平台未提供的字段为 null。卷探测在预检与显式查询时执行。
+
 ```powershell
 cargo build --locked
 $evidence = New-Item -ItemType Directory -Force -Path .\target\evidence-example
