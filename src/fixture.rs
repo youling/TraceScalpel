@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use windows_sys::Win32::Foundation::FILETIME;
-use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows_sys::Win32::System::Pipes::CreatePipe;
-use windows_sys::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
+
+use crate::storage::Row;
+use crate::timebase::{self, Clock, qpc};
 
 const TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_EXE_BYTES: u64 = 128 * 1024 * 1024;
@@ -24,21 +24,6 @@ pub struct Capture {
     capture_id: String,
     clock: Clock,
     events: [Event; 5],
-}
-
-#[derive(Serialize)]
-struct Clock {
-    source: &'static str,
-    frequency_hz: String,
-    utc_calibration: UtcCalibration,
-}
-
-#[derive(Serialize)]
-struct UtcCalibration {
-    source: &'static str,
-    qpc_before: String,
-    qpc_after: String,
-    filetime_100ns_since_1601_utc: String,
 }
 
 #[derive(Serialize)]
@@ -56,12 +41,48 @@ pub struct FixtureError {
     pub cause: io::Error,
 }
 
-fn qpc() -> io::Result<i64> {
-    let mut ticks = 0;
-    if unsafe { QueryPerformanceCounter(&mut ticks) } == 0 {
-        return Err(io::Error::last_os_error());
+impl Capture {
+    pub fn id(&self) -> &str {
+        &self.capture_id
     }
-    Ok(ticks)
+
+    pub fn rows(&self) -> io::Result<Vec<Row>> {
+        self.events
+            .iter()
+            .enumerate()
+            .map(|(index, event)| {
+                Ok(Row {
+                    sequence: index as i64 + 1,
+                    qpc: parse_qpc(&event.qpc_start)?,
+                    process_id: event.process_id,
+                    kind: event.kind.to_string(),
+                    data: serde_json::to_vec(&event.details)?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn coverage_end(&self) -> io::Result<i64> {
+        let [.., last] = &self.events;
+        let latest = parse_qpc(&last.qpc_end)?;
+        latest
+            .checked_add(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "fixture interval overflow"))
+    }
+
+    pub fn clock(&self) -> &Clock {
+        &self.clock
+    }
+}
+
+fn parse_qpc(value: &str) -> io::Result<i64> {
+    value
+        .parse()
+        .map_err(|cause| io::Error::new(io::ErrorKind::InvalidData, cause))
+}
+
+pub fn new_etw_capture_id() -> io::Result<String> {
+    Ok(format!("etw-{}-{}", std::process::id(), qpc()?))
 }
 
 fn measure(
@@ -257,40 +278,9 @@ fn file_exchange() -> io::Result<Value> {
     ))
 }
 
-fn sample_clock() -> io::Result<Clock> {
-    let mut frequency = 0i64;
-    if unsafe { QueryPerformanceFrequency(&mut frequency) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    if frequency <= 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid QPC frequency",
-        ));
-    }
-    let before = qpc()?;
-    let mut utc = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    unsafe { GetSystemTimePreciseAsFileTime(&mut utc) };
-    let after = qpc()?;
-    let filetime = ((utc.dwHighDateTime as u64) << 32) | utc.dwLowDateTime as u64;
-    Ok(Clock {
-        source: "QueryPerformanceCounter",
-        frequency_hz: frequency.to_string(),
-        utc_calibration: UtcCalibration {
-            source: "GetSystemTimePreciseAsFileTime",
-            qpc_before: before.to_string(),
-            qpc_after: after.to_string(),
-            filetime_100ns_since_1601_utc: filetime.to_string(),
-        },
-    })
-}
-
 /// Perform owned, local fixture operations and return their QPC intervals.
 pub fn run() -> Result<Capture, FixtureError> {
-    let clock = sample_clock().map_err(|cause| FixtureError {
+    let clock = timebase::sample().map_err(|cause| FixtureError {
         stage: "clock",
         cause,
     })?;

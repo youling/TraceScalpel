@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -149,4 +149,159 @@ fn stdio_protocol_and_owned_fixture_end_to_end() {
         0,
         "fixture must clean its owned files"
     );
+}
+
+struct EvidenceClient {
+    _child: OwnedChild,
+    input: ChildStdin,
+    output: mpsc::Receiver<String>,
+}
+
+impl EvidenceClient {
+    fn start(root: &Scratch) -> Self {
+        let mut child = OwnedChild(
+            Command::new(env!("CARGO_BIN_EXE_tracescalpel"))
+                .env("TRACESCALPEL_EVIDENCE_DIR", &root.0)
+                .env("TRACESCALPEL_FIXTURE_DIR", &root.0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let input = child.0.stdin.take().unwrap();
+        let stdout = child.0.stdout.take().unwrap();
+        let (sender, output) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            _child: child,
+            input,
+            output,
+        }
+    }
+
+    fn call(&mut self, method: &str, params: Value) -> Value {
+        writeln!(
+            self.input,
+            "{}",
+            json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params })
+        )
+        .unwrap();
+        let line = self.output.recv_timeout(Duration::from_secs(20)).unwrap();
+        let reply: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(reply["id"], 1);
+        reply
+    }
+
+    fn ok(&mut self, method: &str, params: Value) -> Value {
+        let reply = self.call(method, params);
+        assert!(reply.get("error").is_none(), "{method}: {reply}");
+        reply["result"].clone()
+    }
+}
+
+#[test]
+fn native_etl_evidence_reopens_and_pages_across_all_backends() {
+    let scratch = Scratch::new();
+    let mut recorder = EvidenceClient::start(&scratch);
+    let sealed: Vec<Value> = ["sqlite", "segments", "redb"]
+        .into_iter()
+        .map(|backend| {
+            let manifest = recorder.ok(
+                "camera.record_fixture",
+                json!({ "backend": backend, "source": "etw_owned" }),
+            );
+            assert_eq!(manifest["backend"], backend);
+            assert_eq!(manifest["rows"], 64);
+            assert_eq!(manifest["source"], "etw_owned");
+            assert_eq!(manifest["raw"]["filename"], "source.etl");
+            assert_eq!(manifest["coverage_complete"], true);
+            let anchors = manifest["utc_anchors"].as_array().unwrap();
+            assert_eq!(anchors.len(), 2);
+            for anchor in anchors {
+                assert_eq!(anchor["frequency_hz"], manifest["frequency_hz"]);
+                let sample = &anchor["utc_calibration"];
+                assert!(decimal(&sample["qpc_before"]) <= decimal(&sample["qpc_after"]));
+                assert!(decimal(&sample["filetime_100ns_since_1601_utc"]) > 0);
+            }
+            manifest
+        })
+        .collect();
+    drop(recorder);
+
+    let mut reader = EvidenceClient::start(&scratch);
+    for manifest in sealed {
+        let id = manifest["capture_id"].as_str().unwrap();
+        let params = json!({ "capture_id": id });
+        assert_eq!(reader.ok("camera.verify_capture", params.clone()), manifest);
+        let mut cursor = Value::Null;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            let page = reader.ok(
+                "camera.query_events",
+                json!({ "capture_id": id, "limit": 17, "cursor": cursor }),
+            );
+            assert_eq!(page["coverage"]["status"], "complete");
+            assert_eq!(page["coverage"]["native_loss"]["session_events_lost"], 0);
+            for event in page["events"].as_array().unwrap() {
+                assert_eq!(event["locator"]["sha256"], manifest["raw"]["sha256"]);
+                let qpc = decimal(&event["qpc"]);
+                assert!(decimal(&event["details"]["emission_qpc_before"]) <= qpc);
+                assert!(qpc <= decimal(&event["details"]["emission_qpc_after"]));
+                seen.push(decimal(&event["sequence"]));
+            }
+            cursor = page["next_cursor"].clone();
+        }
+        assert!(cursor.is_null());
+        assert_eq!(seen, (1..=64).collect::<Vec<_>>());
+
+        let empty = reader.ok(
+            "camera.query_events",
+            json!({ "capture_id": id, "process_id": 0 }),
+        );
+        assert_eq!(empty["events"], json!([]));
+        assert_eq!(empty["coverage"]["status"], "complete");
+        let early = (decimal(&manifest["qpc_start"]) - 1).to_string();
+        let partial = reader.ok(
+            "camera.query_events",
+            json!({ "capture_id": id, "process_id": 0, "qpc_start": early }),
+        );
+        assert_eq!(partial["events"], json!([]));
+        assert_eq!(partial["coverage"]["status"], "partial");
+
+        let first = reader.ok(
+            "camera.query_events",
+            json!({ "capture_id": id, "limit": 1 }),
+        );
+        let stale = reader.call(
+            "camera.query_events",
+            json!({ "capture_id": id, "process_id": 0, "cursor": first["next_cursor"] }),
+        );
+        assert_eq!(stale["error"]["code"], -32602);
+        assert_eq!(reader.ok("camera.verify_capture", params.clone()), manifest);
+        if manifest["backend"] == "sqlite" {
+            let wal = scratch.0.join(id).join("events.sqlite-wal");
+            fs::write(&wal, b"unexpected WAL").unwrap();
+            let unexpected_wal = reader.call("camera.query_events", params.clone());
+            assert_eq!(unexpected_wal["error"]["data"]["kind"], "InvalidData");
+            fs::remove_file(wal).unwrap();
+        }
+
+        let etl = scratch.0.join(id).join("source.etl");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(etl)
+            .unwrap()
+            .write_all(b"changed")
+            .unwrap();
+        let unverified = reader.call("camera.verify_capture", params);
+        assert_eq!(unverified["error"]["data"]["kind"], "InvalidData");
+        let unqueryable = reader.call("camera.query_events", json!({ "capture_id": id }));
+        assert_eq!(unqueryable["error"]["data"]["kind"], "InvalidData");
+    }
 }
