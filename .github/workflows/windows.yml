@@ -26,3 +26,14 @@ jobs:
         run: cargo test --locked --manifest-path validation/lifecycle/Cargo.toml
       - name: Verify synthetic clock-window classifications
         run: python validation/verify_window.py validation/fixed_window.json
+      - name: Verify owned system ETW process and file controls
+        timeout-minutes: 3
+        env:
+          TRACESCALPEL_SYSTEM_ETW_CONTROL: "1"
+        run: |
+          cargo test --locked --lib owned_system_process_file_control -- --ignored --nocapture --test-threads=1 2>&1 |
+            Tee-Object -Variable control
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not ($control -match '^test result: ok\. 1 passed;')) {
+            throw 'Expected one passing native system ETW test'
+          }
