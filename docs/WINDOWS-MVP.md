@@ -75,3 +75,9 @@ cargo test --release --locked compare_storage_backends -- --ignored --nocapture
 ```powershell
 cargo test --release --locked measure_owned_etw_and_clock_calls -- --ignored --nocapture --test-threads=1
 ```
+
+## Windows 系统 Provider 正负控
+
+独立 Windows 托管 CI 使用常规 ETW 会话记录系统进程与文件 provider。测试只对照自有子进程和同轮临时文件，发布汇总、原始 QPC 检查结果和丢失计数。事件 ID 和 keyword 用于缩小记录范围，回读时以自有进程与文件身份确认命中。会话使用唯一名称、有限缓冲和有限 ETL，停止时只控制本次创建的会话。原件仅存于临时测试目录。
+
+本实验用封存回放验证命中。实时正控通过后打开用户观察窗口的 READY 验收另列在 [#3](https://github.com/youling/TraceScalpel/issues/3)。 [Windows 系统 Provider](https://learn.microsoft.com/en-us/windows/win32/etw/system-providers) · [Windows 托管 CI 权限](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)

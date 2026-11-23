@@ -36,7 +36,7 @@ pub fn evidence_directory() -> io::Result<PathBuf> {
     Ok(root)
 }
 
-fn token_elevated() -> io::Result<bool> {
+pub(crate) fn token_elevated() -> io::Result<bool> {
     let mut token = std::ptr::null_mut();
     // SAFETY: The pseudo-process handle is current and the output points to one HANDLE.
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
