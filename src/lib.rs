@@ -3,6 +3,8 @@ mod evidence;
 mod fixture;
 mod startup;
 mod storage;
+#[cfg(test)]
+mod survey;
 mod timebase;
 
 use serde::de::DeserializeOwned;

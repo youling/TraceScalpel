@@ -37,3 +37,14 @@ jobs:
           if (-not ($control -match '^test result: ok\. 1 passed;')) {
             throw 'Expected one passing native system ETW test'
           }
+      - name: Verify the stats-only real-time ETW survey
+        timeout-minutes: 3
+        env:
+          TRACESCALPEL_SYSTEM_ETW_CONTROL: "1"
+        run: |
+          cargo test --locked --lib owned_realtime_stats_control -- --ignored --nocapture --test-threads=1 2>&1 |
+            Tee-Object -Variable survey
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not ($survey -match '^test result: ok\. 1 passed;')) {
+            throw 'Expected one passing stats-only real-time ETW test'
+          }

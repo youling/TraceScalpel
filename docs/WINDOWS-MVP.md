@@ -81,3 +81,9 @@ cargo test --release --locked measure_owned_etw_and_clock_calls -- --ignored --n
 独立 Windows 托管 CI 使用命名系统 ETW 会话记录系统进程与文件事件。测试只对照自有子进程和同轮临时文件，发布汇总、原始 QPC 检查结果和丢失计数。进程来源用事件 ID 和 keyword，文件来源用系统 File I/O 标志。回读时以自有进程与文件身份确认命中。会话使用唯一名称、有限缓冲和有限 ETL，停止时只控制本次创建的会话。原件仅存于临时测试目录。
 
 本实验用封存回放验证命中。实时正控通过后打开用户观察窗口的 READY 验收另列在 [#3](https://github.com/youling/TraceScalpel/issues/3)。 [Windows 系统 Provider](https://learn.microsoft.com/en-us/windows/win32/etw/system-providers) · [Windows 托管 CI 权限](https://docs.github.com/en/actions/reference/runners/github-hosted-runners#administrative-privileges)
+
+## 实时统计摸底
+
+实时统计在独立的 Windows 托管测试机由两个自有正控建立 READY。两秒测量窗内，由同一测试程序创建一个空文件，再分五批打开该文件，每批 64 次。进程启动另有一次配对正控。统计只纳入已归属的进程和文件事件，按来源、事件 ID、opcode 和版本分组，记录事件数、ETW 用户数据字节、单事件最小与最大长度及约 100 ms 的峰值桶。每种已观测事件只读一次 TDH 顶层字段定义。窗外的同身份事件标为未测，聚合器只报告收到的数据。 [TDH 事件元数据](https://learn.microsoft.com/en-us/windows/win32/api/tdh/nf-tdh-tdhgeteventinformation)
+
+实时会话将数据交给内存中的消费者。统计持有有界计数和 schema 字段名，测试报告仅包含汇总与正控回执。ETW 用户数据字节用于判断原始事件体量。总磁盘格式开销、网络线速和业务内容使用各自的独立测量口径。 [ETW 实时消费者](https://learn.microsoft.com/en-us/windows/win32/api/evntrace/nf-evntrace-processtrace)

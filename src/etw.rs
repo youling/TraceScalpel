@@ -431,6 +431,9 @@ pub fn run_owned_in(dir: &Path) -> io::Result<EtwFixture> {
 mod benchmark;
 
 #[cfg(test)]
+mod schema;
+
+#[cfg(test)]
 mod system_probe;
 
 #[cfg(test)]
