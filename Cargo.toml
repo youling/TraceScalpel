@@ -7,13 +7,24 @@ license-file = "LICENSE"
 publish = false
 
 [dependencies]
+crc32fast = "=1.5.1"
+redb = "=5.0.0"
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["arbitrary_precision", "raw_value"] }
 sha2 = "=0.10.9"
 windows-sys = { version = "=0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics_Etw",
     "Win32_System_Performance",
     "Win32_System_Pipes",
     "Win32_System_SystemInformation",
+    "Win32_System_Time",
 ] }
+
+[profile.dev.package.libsqlite3-sys]
+# MSVC debug records for the SQLite amalgamation can fail on deep checkout paths.
+debug = false

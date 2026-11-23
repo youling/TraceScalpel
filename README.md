@@ -42,6 +42,10 @@ process to choose its scratch location.
 
 Run the Windows subprocess integration tests with `cargo test --locked`.
 
+The evidence MVP also seals private ETL and reads it through SQLite WAL,
+binary segments, or redb. See the [Windows evidence MVP](docs/WINDOWS-MVP.md)
+for the API, local clock contract, and comparison measurements.
+
 ## Design and verification
 
 - [Architecture and evidence flow](docs/ARCHITECTURE.md)

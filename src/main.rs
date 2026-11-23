@@ -1,5 +1,10 @@
+mod etw;
+mod evidence;
 mod fixture;
+mod storage;
+mod timebase;
 
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json, value::RawValue};
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
@@ -55,6 +60,37 @@ fn error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0", "id":id, "error":{"code":code, "message":message}})
 }
 
+fn evidence_response<T: DeserializeOwned>(
+    id: Value,
+    params: Option<&&RawValue>,
+    call: impl FnOnce(T) -> io::Result<Value>,
+) -> Value {
+    let Some(request) = params.and_then(|value| serde_json::from_str::<T>(value.get()).ok()) else {
+        return error(id, -32602, "Invalid evidence parameters");
+    };
+    match call(request) {
+        Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+        Err(failure) => {
+            let code = if failure.kind() == io::ErrorKind::InvalidInput {
+                -32602
+            } else {
+                -32010
+            };
+            json!({
+                "jsonrpc": "2.0", "id": id, "error": {
+                    "code": code,
+                    "message": if code == -32602 { "Invalid evidence parameters" } else { "Evidence operation failed" },
+                    "data": {
+                        "kind": format!("{:?}", failure.kind()),
+                        "os_error": failure.raw_os_error(),
+                        "detail": failure.to_string()
+                    }
+                }
+            })
+        }
+    }
+}
+
 fn handle(line: &[u8]) -> Option<Value> {
     let request: &RawValue = match serde_json::from_slice(line) {
         Ok(value) => value,
@@ -104,7 +140,13 @@ fn handle(line: &[u8]) -> Option<Value> {
             "id": id,
             "result": {
                 "version": env!("CARGO_PKG_VERSION"),
-                "methods": ["camera.capabilities", "camera.run_fixture"],
+                "methods": [
+                    "camera.capabilities", "camera.run_fixture", "camera.record_fixture",
+                    "camera.verify_capture", "camera.query_events"
+                ],
+                "storage_backends": ["sqlite", "segments", "redb"],
+                "fixture_sources": ["fixture_self_report", "etw_owned"],
+                "evidence_root_env": "TRACESCALPEL_EVIDENCE_DIR",
                 "transport": "JSON-RPC 2.0 over stdio, one request per line",
                 "max_request_bytes": MAX_LINE_BYTES,
                 "limitations": [
@@ -138,6 +180,13 @@ fn handle(line: &[u8]) -> Option<Value> {
             -32602,
             "Invalid params. Omit params or provide an empty object.",
         ),
+        ("camera.record_fixture", _) => {
+            evidence_response(id, object.get("params"), evidence::record)
+        }
+        ("camera.verify_capture", _) => {
+            evidence_response(id, object.get("params"), evidence::verify)
+        }
+        ("camera.query_events", _) => evidence_response(id, object.get("params"), evidence::query),
         _ => error(id, -32601, "Method not found"),
     };
     respond.then_some(response)
